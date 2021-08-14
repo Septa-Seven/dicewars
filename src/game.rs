@@ -40,7 +40,7 @@ impl Area {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum Command {
     Attack {from: usize, to: usize},
@@ -54,6 +54,7 @@ pub struct ValidationError {
 #[derive(Serialize)]
 pub struct Game {
     round: u32,
+    #[serde(skip)]
     eliminate_every_n_round: u32,
     current_player_index: usize,
     players: Vec<Player>,
@@ -69,7 +70,8 @@ impl Game {
 
         let random = &mut thread_rng();
         let areas_per_player = (
-            (areas_graph.len() as f32 * random.gen_range(0.0..1.0)) as usize / players_count).max(players_count);
+            (areas_graph.len() as f32 * random.gen_range(0.0..1.0)) as usize / players_count
+        ).max(players_count);
         
         let players_area_count = areas_per_player * players_count;
         let neutral_area_count = areas_graph.len() - players_area_count;
@@ -232,8 +234,6 @@ impl Game {
             *incomes.iter().max().unwrap()
         };
 
-        println!("Player {}: income {}; {:?}", player_id, income, not_full_areas);
-
         // Spend savings
         let player = &self.players[self.current_player_index];
         income += player.savings;
@@ -315,5 +315,9 @@ impl Game {
 
     pub fn get_current_player(&self) -> usize {
         self.players[self.current_player_index].id
+    }
+
+    pub fn get_players(&self) -> Vec<usize> {
+        self.players.iter().map(|player| player.id).collect()
     }
 }

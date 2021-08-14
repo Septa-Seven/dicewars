@@ -1,15 +1,15 @@
-use std::time::{Duration};
+// use std::time::{Duration};
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::cmp::min;
+use log::info;
+use websocket::server::NoTlsAcceptor;
 use websocket::{Message, OwnedMessage};
 use websocket::sync::{Client, Server};
 use serde_json::{Value, json};
 use crate::game::{Command, Game};
 use crate::generation::{generate_areas, get_polygons};
 
-fn game_loop(mut players: Vec<Client<TcpStream>>) {
+pub fn game_loop(players: Vec<Client<TcpStream>>) {
+    let mut players: Vec<_> = players.into_iter().map(|player| Some(player)).collect();
     let players_count = players.len();
     let (areas, graph) = generate_areas(players_count * 10, 10..12);
     
@@ -21,74 +21,128 @@ fn game_loop(mut players: Vec<Client<TcpStream>>) {
             "graph": graph,
             "eliminate_every_n_round": eliminate_every_n_round,
         });
-    
+        info!("{}", serde_json::to_string(&config).unwrap());
+        
         game = Game::new(players_count, eliminate_every_n_round, graph);
         
         for (player_id, player) in players.iter_mut().enumerate() {
             config["me"] = Value::from(player_id);
-            if let Err(e) = player.send_message(&Message::text(config.to_string())) {
-                println!("Send error: {:?}", e);
+            if let Err(e) = player.as_mut().unwrap().send_message(&Message::text(json!({"start": config}).to_string())) {
+                info!("Send error: {:?}", e);
             }
         }
     }
 
+    let game_end_message = &Message::text(json!({"end": {}}).to_string());
+    let close_message = &Message::close_because(1000, "Eliminated");
+    
     while !game.is_ended() {
-        let state = &Message::text(serde_json::to_string(&game).unwrap());
-        for player in &mut players {
-            if let Err(e) = player.send_message(state) {
-                println!("Send error: {:?}", e);
-            }
-        }
+        info!("{}", serde_json::to_string(&game).unwrap());
+
+        let state = &Message::text(json!({"state": game}).to_string());
+        
+        players
+            .iter_mut()
+            .filter(|player| player.is_some())
+            .map(|player| player.as_mut().unwrap())
+            .for_each(|player| {
+                if let Err(e) = player.send_message(state) {
+                    info!("Send error: {:?}", e);
+                }
+            });
         
         {
             let player_id = game.get_current_player();
-            let player = &mut players[player_id];
-
-            let command = match player.recv_message() {
-                Ok(OwnedMessage::Text(raw_data)) => {
-                    serde_json::from_str(raw_data.as_str()).unwrap_or(Command::EndTurn)
+            let wrapped_player = &mut players[player_id];
+            let mut close = false;
+            let command = match wrapped_player {
+                Some(player) => {
+                    match player.recv_message() {
+                        // TODO: EndTurn only if close or error, if ping then skip
+                        Ok(OwnedMessage::Text(raw_data)) => {
+                            serde_json::from_str(raw_data.as_str()).unwrap_or(Command::EndTurn)
+                        }
+                        Ok(OwnedMessage::Close(_)) => {
+                            close = true;
+                            Command::EndTurn
+                        }
+                        _ => {
+                            // TODO: make this player None
+                            Command::EndTurn
+                        },
+                    }
                 }
-                _ => {Command::EndTurn},
+                None => Command::EndTurn
             };
 
-            println!("Player {} turn: {:?}", player_id, command);
+            if close {
+                *wrapped_player = None
+            }
+            
+            info!("{}", json!({"player": player_id, "command": command}).to_string());
             let _ = game.turn(command);
         }
-    }
 
-    println!("Match ended");
-}
-
-fn match_scheduler(clients: Arc<Mutex<Vec<Client<TcpStream>>>>) {
-    loop {
-        thread::sleep(Duration::from_secs(5));
-        let mut acquired_clients = clients.lock().unwrap();
-        let clients_count = acquired_clients.len();
-        if clients_count > 1 {
-            let players = acquired_clients
-                .drain(..min(clients_count, 8))
-                .collect();
-            
-            thread::spawn(move || game_loop(players));
-            println!("Match started");
+        // Return eliminated players to matchmaking pool
+        let mut eliminated = vec![true; players_count];
+        for player_id in game.get_players() {
+            eliminated[player_id] = false;
         }
+        
+        players = eliminated
+            .into_iter()
+            .zip(players.into_iter())
+            .map(|(eliminated, player)| {
+                if eliminated {
+                    if let Some(mut client) = player {
+                        // TODO: Make dedicated function that handles errors
+                        if let Err(e) = client.send_message(game_end_message) {
+                            info!("Send error: {:?}", e);
+                        }
+                        if let Err(e) = client.send_message(close_message) {
+                            info!("Send error: {:?}", e);
+                        }
+                        return None;
+                    }
+                }
+
+                player
+            })
+            .collect();
     }
+
+    // TODO: make game end function    
+    players
+        .into_iter()
+        .for_each(|player| {
+            if let Some(mut client) = player {
+                // TODO: Make dedicated function that handles errors
+                if let Err(e) = client.send_message(game_end_message) {
+                    info!("Send error: {:?}", e);
+                }
+                if let Err(e) = client.send_message(close_message) {
+                    info!("Send error: {:?}", e);
+                }
+            }
+        });
+
+    info!("{}", json!({"winners": game.get_players()}).to_string());
 }
 
-pub fn connection_handler() {
-    let server = Server::bind("0.0.0.0:9001").unwrap();
 
-    let clients = Arc::new(Mutex::new(Vec::new()));
-    let clients_clone = clients.clone();
-    thread::spawn(move || match_scheduler(clients_clone));
+pub fn connection_handler(server: Server<NoTlsAcceptor>, number_of_clients: usize) -> Vec<Client<TcpStream>>{
+    let mut clients = Vec::with_capacity(number_of_clients);
     
-    // let mut next_client_id: usize = 0;
-
     for connection in server.filter_map(Result::ok) {
         let client = connection.accept().unwrap();
-        println!("New connection: {}", client.peer_addr().unwrap());
-        let mut aquired_clients = clients.lock().unwrap();
-        aquired_clients.push(client);
-        // next_client_id += 1;
+        info!("Connection: {}", client.peer_addr().unwrap());
+
+        clients.push(client);
+
+        if clients.len() == number_of_clients {
+            break;
+        }
     }
+
+    clients
 }
