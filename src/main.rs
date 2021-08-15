@@ -36,5 +36,13 @@ fn main() {
     let server = Server::bind(opt.address).unwrap();
     let clients = network::connection_handler(server, opt.players);
 
-    network::game_loop(clients);
+    network::game_loop(
+        clients,
+        opt.area_count,
+        opt.max_area_size,
+        opt.min_area_size,
+        opt.spread,
+        opt.grow,
+        opt.eliminate_every_n_round,
+    );
 }

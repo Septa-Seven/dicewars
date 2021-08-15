@@ -8,14 +8,18 @@ use serde_json::{Value, json};
 use crate::game::{Command, Game};
 use crate::generation::{generate_areas, get_polygons};
 
-pub fn game_loop(players: Vec<Client<TcpStream>>) {
+pub fn game_loop(
+    players: Vec<Client<TcpStream>>, areas_count: usize,
+    max_area_size: usize, min_area_size: usize,
+    spread: f32, grow: f32,
+    eliminate_every_n_round: u32,
+) {
     let mut players: Vec<_> = players.into_iter().map(|player| Some(player)).collect();
     let players_count = players.len();
-    let (areas, graph) = generate_areas(players_count * 10, 10..12);
+    let (areas, graph) = generate_areas(areas_count, min_area_size..max_area_size + 1);
     
     let mut game;
     {
-        let eliminate_every_n_round = 3;
         let mut config = json!({
             "areas": get_polygons(areas),
             "graph": graph,
@@ -23,7 +27,10 @@ pub fn game_loop(players: Vec<Client<TcpStream>>) {
         });
         info!("{}", serde_json::to_string(&config).unwrap());
         
-        game = Game::new(players_count, eliminate_every_n_round, graph);
+        game = Game::new(
+            players_count, eliminate_every_n_round, graph,
+            spread, grow
+        );
         
         for (player_id, player) in players.iter_mut().enumerate() {
             config["me"] = Value::from(player_id);
@@ -79,7 +86,7 @@ pub fn game_loop(players: Vec<Client<TcpStream>>) {
                 *wrapped_player = None
             }
             
-            info!("{}", json!({"player": player_id, "command": command}).to_string());
+            info!("{}", json!({"player": player_id, "command": serde_json::to_value(&command).unwrap()}).to_string());
             let _ = game.turn(command);
         }
 

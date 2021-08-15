@@ -41,7 +41,7 @@ impl Area {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", tag = "type", content = "data")]
 pub enum Command {
     Attack {from: usize, to: usize},
     EndTurn,
@@ -64,13 +64,16 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn new(players_count: usize, eliminate_every_n_round: u32, areas_graph: AreaGraph) -> Game {
+    pub fn new(players_count: usize, eliminate_every_n_round: u32,
+        areas_graph: AreaGraph, spread: f32, grow: f32) -> Game {
         assert!(players_count > 1 && players_count < 9);
         assert!(players_count <= areas_graph.len());
+        assert!(0.0 <= grow || grow <= 1.0);
+        assert!(0.0 <= spread || spread <= 1.0);
 
         let random = &mut thread_rng();
         let areas_per_player = (
-            (areas_graph.len() as f32 * random.gen_range(0.0..1.0)) as usize / players_count
+            (areas_graph.len() as f32 * spread) as usize / players_count
         ).max(players_count);
         
         let players_area_count = areas_per_player * players_count;
@@ -104,7 +107,7 @@ impl Game {
         };
 
         // Grow players
-        let additional_player_dices = random.gen_range(0..=areas_per_player * 7) as u32;
+        let additional_player_dices = ((areas_per_player * 7) as f32 * grow) as u32;
         for player_id in 0..players_count {
             let player_areas = ((player_id * areas_per_player)..((player_id + 1) * areas_per_player)).collect();
             game.grow_areas(player_areas, additional_player_dices);
