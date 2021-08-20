@@ -225,7 +225,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dice-wars"
+name = "dicewars"
 version = "0.1.0"
 dependencies = [
  "clap",
