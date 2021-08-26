@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use clap::{Clap};
+use clap::Clap;
 
 
 // TODO: description

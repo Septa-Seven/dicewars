@@ -2,7 +2,7 @@ use std::ops::Range;
 use std::collections::{HashMap, HashSet};
 use std::iter::repeat_with;
 use rand::{self, Rng};
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 
 
 type Point = (i32, i32);
@@ -30,39 +30,59 @@ pub fn generate_areas(areas_count: usize, area_size_range: Range<usize>) -> (Vec
     let mut graph: Vec<HashSet<usize>> = repeat_with(HashSet::new)
         .take(areas_count)
         .collect();
+    
+    let mut possible_start = IndexSet::new();
+    possible_start.insert((0, 0));
 
     let mut field = HashMap::with_capacity(sizes.iter().sum());
     
-    let mut can_expand_from = IndexSet::new();
-    can_expand_from.insert((0, 0));
-
     for area_index in 0..areas_count {
         'retry_area_generation: loop {
             // Pick empty hex to start area from
-            let start = *can_expand_from.get_index(random.gen_range(0..can_expand_from.len())).unwrap();
-            let mut possible_expantion = IndexSet::new();
-            possible_expantion.insert(start);
+            let start_hex_index= random.gen_range(0..possible_start.len());
+            let &start_hex = possible_start.get_index(start_hex_index).unwrap();
+
+
+            let mut neighbors_count = IndexMap::new();
+            let mut max_neighbors_count = 0;
+            neighbors_count.insert((0, 0), 0);
+        
+            let mut count_groups = vec![IndexSet::new(); 5];
+            count_groups[max_neighbors_count].insert(start_hex);
             
             let mut size = sizes[area_index];
             let mut area = Vec::new();
             
             while size > 0 {
-                if possible_expantion.is_empty() {
-                    for a in area.iter() {
-                        field.remove(a);
-                    }
-                    continue 'retry_area_generation;
+                let expand_hex;
+                {
+                    let group = loop {
+                        let group = &mut count_groups[max_neighbors_count];
+                        if !group.is_empty() {
+                            break group;
+                        }
+                        else if max_neighbors_count == 0 {
+                            for hex in area.iter() {
+                                field.remove(hex);
+                            }
+                            continue 'retry_area_generation;
+                        }
+                        else {
+                            max_neighbors_count -= 1;
+                        }
+                    };
+                    
+                    let expand_hex_index = random.gen_range(0..group.len());
+                    expand_hex = *group.get_index(expand_hex_index).unwrap();
+                    group.remove(&expand_hex);
                 }
 
-                let &expand = possible_expantion.get_index(random.gen_range(0..possible_expantion.len())).unwrap();
-                possible_expantion.remove(&expand);
-                
-                field.insert(expand, area_index);
-                area.push(expand);
+                field.insert(expand_hex, area_index);
+                area.push(expand_hex);
 
-                let directions = if expand.1 % 2 == 0 {EVEN_DIRECTIONS} else {ODD_DIRECTIONS};
+                let directions = if expand_hex.1 % 2 == 0 {EVEN_DIRECTIONS} else {ODD_DIRECTIONS};
                 for direction in directions.iter() {
-                    let neighbor = (expand.0 + direction.0, expand.1 + direction.1);
+                    let neighbor = (expand_hex.0 + direction.0, expand_hex.1 + direction.1);
                     
                     if let Some(&neighbor_area_index) = field.get(&neighbor) {
                         if neighbor_area_index != area_index {
@@ -70,17 +90,36 @@ pub fn generate_areas(areas_count: usize, area_size_range: Range<usize>) -> (Vec
                             graph[area_index].insert(neighbor_area_index);
                         }
                     } else {
-                        possible_expantion.insert(neighbor);
+                        let count = if let Some(count) = neighbors_count.get_mut(&neighbor) {
+                            {
+                                let group = &mut count_groups[*count];
+                                group.remove(&neighbor);
+                            }
+                            *count += 1;
+                            *count
+                        } else {
+                            neighbors_count.insert(neighbor, 0);
+                            0
+                        };
+
+                        if count != 6 {
+                            let group = &mut count_groups[count];
+                            group.insert(neighbor);
+                        
+                            if max_neighbors_count < count {
+                                max_neighbors_count = count;
+                            }    
+                        }
                     }
                 }
 
                 size -= 1;
             }
+            
+            possible_start.extend(neighbors_count.keys());
 
-            can_expand_from.extend(possible_expantion);
-
-            for a in area {
-                can_expand_from.remove(&a);
+            for a in area.iter() {
+                possible_start.remove(a);
             }
             break;
         }
