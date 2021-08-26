@@ -17,6 +17,8 @@ pub fn game_loop(
     let mut players: Vec<_> = players.into_iter().map(|player| Some(player)).collect();
     let players_count = players.len();
     let (areas, graph) = generate_areas(areas_count, min_area_size..max_area_size + 1);
+    let mut ranks = vec![0usize; players_count];
+    let mut current_rank = 0;
     
     let mut game;
     {
@@ -61,7 +63,6 @@ pub fn game_loop(
         {
             let player_id = game.get_current_player();
             let wrapped_player = &mut players[player_id];
-            let mut close = false;
             let command = match wrapped_player {
                 Some(player) => {
                     match player.recv_message() {
@@ -70,7 +71,7 @@ pub fn game_loop(
                             serde_json::from_str(raw_data.as_str()).unwrap_or(Command::EndTurn)
                         }
                         Ok(OwnedMessage::Close(_)) => {
-                            close = true;
+                            *wrapped_player = None;
                             Command::EndTurn
                         }
                         _ => {
@@ -81,25 +82,22 @@ pub fn game_loop(
                 }
                 None => Command::EndTurn
             };
-
-            if close {
-                *wrapped_player = None
-            }
             
             info!("{}", json!({"player": player_id, "command": serde_json::to_value(&command).unwrap()}).to_string());
             let _ = game.turn(command);
         }
 
-        // Return eliminated players to matchmaking pool
         let mut eliminated = vec![true; players_count];
         for player_id in game.get_players() {
             eliminated[player_id] = false;
         }
+        let mut somebody_eliminated = false;
         
         players = eliminated
             .into_iter()
             .zip(players.into_iter())
-            .map(|(eliminated, player)| {
+            .enumerate()
+            .map(|(player_id, (eliminated, player))| {
                 if eliminated {
                     if let Some(mut client) = player {
                         // TODO: Make dedicated function that handles errors
@@ -109,6 +107,10 @@ pub fn game_loop(
                         if let Err(e) = client.send_message(close_message) {
                             info!("Send error: {:?}", e);
                         }
+
+                        ranks[player_id] = current_rank;
+                        somebody_eliminated = true;
+
                         return None;
                     }
                 }
@@ -116,9 +118,13 @@ pub fn game_loop(
                 player
             })
             .collect();
+        
+        if somebody_eliminated {
+            current_rank += 1;
+        }
     }
 
-    // TODO: make game end function    
+    // TODO: make game end function
     players
         .into_iter()
         .for_each(|player| {
@@ -132,10 +138,19 @@ pub fn game_loop(
                 }
             }
         });
+    
+    // Fill winners ranks
+    for player_id in game.get_players() {
+        ranks[player_id] = current_rank;
+    }
 
-    info!("{}", json!({"winners": game.get_players()}).to_string());
+    // Invert ranks. Less is better.
+    for i in 0..players_count {
+        ranks[i] = current_rank - ranks[i];
+    }
+    
+    info!("{}", json!({"ranks": ranks}).to_string());
 }
-
 
 pub fn connection_handler(server: Server<NoTlsAcceptor>, number_of_clients: usize) -> Vec<Client<TcpStream>>{
     let mut clients = Vec::with_capacity(number_of_clients);
