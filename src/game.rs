@@ -150,6 +150,7 @@ impl Game {
             return Err(ValidationError {reason: String::from("There is no such traversal.")});
         }
         
+        let to_owner;
         {
             let player_id = self.players[self.current_player_index].id;
             let from_area = &self.areas[from];
@@ -162,8 +163,9 @@ impl Game {
             }
 
             let to_area = &self.areas[to];
-            if let Some(to_owner) = to_area.owner {
-                if to_owner == player_id {
+            to_owner = to_area.owner;
+            if let Some(not_neutral) = to_owner {
+                if not_neutral == player_id {
                     return Err(ValidationError {reason: String::from("You can't attack your own area.")});
                 }
             }
@@ -176,6 +178,24 @@ impl Game {
         if from_roll > to_roll {
             self.areas[to].dices = self.areas[from].dices - 1;
             self.areas[to].owner = self.areas[from].owner;
+            
+            // Offended player with no areas left will be eliminated immediately
+            if to_owner.is_some() {
+                let areas_count = self.areas
+                    .iter()
+                    .filter(|area| area.owner == to_owner)
+                    .count();
+                
+                if areas_count == 0 {
+                    let offended_player = to_owner.unwrap();
+                    let offended_index = self.players
+                        .iter()
+                        .position(|player| player.id == offended_player)
+                        .unwrap();
+                    
+                    self.players.remove(offended_index);
+                }
+            }
         }
         self.areas[from].dices = 1;
 

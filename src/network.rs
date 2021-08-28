@@ -84,6 +84,7 @@ pub fn game_loop(
             };
             
             info!("{}", json!({"player": player_id, "command": serde_json::to_value(&command).unwrap()}).to_string());
+            // TODO: send errors
             let _ = game.turn(command);
         }
 
