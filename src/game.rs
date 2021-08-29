@@ -48,7 +48,7 @@ pub enum Command {
 }
 
 pub struct ValidationError {
-    reason: String,
+    pub reason: String,
 }
 
 #[derive(Serialize)]

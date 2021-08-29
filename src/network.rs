@@ -1,27 +1,134 @@
-// use std::time::{Duration};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+use std::thread;
 use std::net::TcpStream;
-use log::info;
+use log::{info, debug};
 use websocket::server::NoTlsAcceptor;
 use websocket::{Message, OwnedMessage};
-use websocket::sync::{Client, Server};
+use websocket::sync::{Client, Server, Writer};
 use serde_json::{Value, json};
 use crate::game::{Command, Game};
 use crate::generation::{generate_areas, get_polygons};
 
+
+enum CommandError {
+    ReadTimeoutError,
+    ParseError,
+    Disconnected,
+}
+
+struct PlayerCommunicator {
+    writer: Writer<TcpStream>,
+    queue: Arc<Mutex<VecDeque<Result<(Command, Instant), CommandError>>>>,
+    message_event: Arc<Condvar>,
+    disconnected: Arc<AtomicBool>,
+}
+
+impl PlayerCommunicator {
+    fn new(player: Client<TcpStream>) -> PlayerCommunicator {
+        let (mut reader, writer) = player.split().unwrap();
+
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        let queue_copy = queue.clone();
+
+        let message_event = Arc::new(Condvar::new());
+        let message_event_copy = message_event.clone();
+
+        let disconnected = Arc::new(AtomicBool::new(false));
+        let disconnected_copy = disconnected.clone();
+        
+        thread::spawn(move || {
+            loop {
+                let message = reader.recv_message();
+                
+                if let Ok(OwnedMessage::Close(_)) | Err(_) = message {
+                    disconnected_copy.store(true, Ordering::Relaxed);
+                    message_event_copy.notify_all();
+                    break;
+                }
+                
+                if let Ok(OwnedMessage::Text(raw_data)) = message {
+                    let parsed_command = serde_json::from_str(raw_data.as_str());
+                    let command_result = if let Ok(command) = parsed_command {
+                        Ok((command, Instant::now()))
+                    } else {
+                        Err(CommandError::ParseError)
+                    };
+
+                    let mut locked_queue = queue_copy.lock().unwrap();
+                    locked_queue.push_back(command_result);
+                    message_event_copy.notify_all();
+                }
+            }
+        });
+
+        PlayerCommunicator {
+            writer,
+            queue,
+            message_event,
+            disconnected,
+        }
+    }
+
+    fn send(&mut self, message: &Message) {
+        if let Err(e) = self.writer.send_message(message) {
+            debug!("Send error: {:?}", e);
+        }
+    }
+
+    fn recv(&self, wait_timeout: u64) -> Result<(Command, Instant), CommandError> {
+        // Try to pop message
+        if self.disconnected.load(Ordering::Relaxed) {
+            return Err(CommandError::Disconnected);
+        }
+        let mut locked_queue = self.queue.lock().unwrap();
+        if let Some(result) = locked_queue.pop_front() {
+            return result;
+        }
+        
+        // Wait for command
+        let (mut locked_queue, _) = self.message_event.wait_timeout(
+            locked_queue, Duration::from_millis(wait_timeout)
+        ).unwrap();
+        
+        // Then try to pop message one more time
+        if self.disconnected.load(Ordering::Relaxed) {
+            return Err(CommandError::Disconnected);
+        }
+        if let Some(result) = locked_queue.pop_front() {
+            return result;
+        }
+        
+        Err(CommandError::ReadTimeoutError)
+    }
+}
+
+// TODO: Make GameConfig
 pub fn game_loop(
-    players: Vec<Client<TcpStream>>, areas_count: usize,
-    max_area_size: usize, min_area_size: usize,
-    spread: f32, grow: f32,
+    players: Vec<Client<TcpStream>>,
+    areas_count: usize,
+    max_area_size: usize,
+    min_area_size: usize,
+    spread: f32,
+    grow: f32,
     eliminate_every_n_round: u32,
+    wait_timeout: u64,
 ) {
-    let mut players: Vec<_> = players.into_iter().map(|player| Some(player)).collect();
     let players_count = players.len();
+    let mut players: Vec<_> = players
+        .into_iter()
+        .map(|player| Some(PlayerCommunicator::new(player)))
+        .collect();
+
     let (areas, graph) = generate_areas(areas_count, min_area_size..max_area_size + 1);
     let mut ranks = vec![0usize; players_count];
     let mut current_rank = 0;
     
     let mut game;
     {
+        // Add timeout to config
         let mut config = json!({
             "areas": get_polygons(areas),
             "graph": graph,
@@ -36,9 +143,7 @@ pub fn game_loop(
         
         for (player_id, player) in players.iter_mut().enumerate() {
             config["me"] = Value::from(player_id);
-            if let Err(e) = player.as_mut().unwrap().send_message(&Message::text(json!({"start": config}).to_string())) {
-                info!("Send error: {:?}", e);
-            }
+            player.as_mut().unwrap().send(&Message::text(json!({"start": config}).to_string()));
         }
     }
 
@@ -55,37 +160,46 @@ pub fn game_loop(
             .filter(|player| player.is_some())
             .map(|player| player.as_mut().unwrap())
             .for_each(|player| {
-                if let Err(e) = player.send_message(state) {
-                    info!("Send error: {:?}", e);
-                }
+                player.send(state);
             });
         
         {
             let player_id = game.get_current_player();
             let wrapped_player = &mut players[player_id];
-            let command = match wrapped_player {
+            let (command, command_error) = match wrapped_player {
                 Some(player) => {
-                    match player.recv_message() {
-                        // TODO: EndTurn only if close or error, if ping then skip
-                        Ok(OwnedMessage::Text(raw_data)) => {
-                            serde_json::from_str(raw_data.as_str()).unwrap_or(Command::EndTurn)
+                    match player.recv(wait_timeout) {
+                        Ok((command, _received_at)) => {
+                            // TODO: warnings for premature commands
+                            (command, None)
                         }
-                        Ok(OwnedMessage::Close(_)) => {
-                            *wrapped_player = None;
-                            Command::EndTurn
+                        Err(CommandError::Disconnected) => {
+                            (Command::EndTurn, Some("Disconnected"))
                         }
-                        _ => {
-                            // TODO: make this player None
-                            Command::EndTurn
-                        },
+                        Err(CommandError::ParseError) => {
+                            (Command::EndTurn, Some("ParseError"))
+                        }
+                        Err(CommandError::ReadTimeoutError) => {
+                            (Command::EndTurn, Some("Read timeout"))
+                        }
                     }
                 }
-                None => Command::EndTurn
+                None => unreachable!("Eliminated player can't turn")
             };
             
-            info!("{}", json!({"player": player_id, "command": serde_json::to_value(&command).unwrap()}).to_string());
-            // TODO: send errors
-            let _ = game.turn(command);
+            let mut state = json!({
+                "player": player_id,
+                "command": serde_json::to_value(&command).unwrap()
+            });
+
+            let turn_result = game.turn(command);
+            if let Some(err_msg) = command_error {
+                state["error"] = Value::String(err_msg.to_string());
+            } else if let Err(err) = turn_result {
+                state["error"] = Value::String(err.reason);
+            }
+
+            info!("{}", state.to_string());
         }
 
         let mut eliminated = vec![true; players_count];
@@ -101,13 +215,8 @@ pub fn game_loop(
             .map(|(player_id, (eliminated, player))| {
                 if eliminated {
                     if let Some(mut client) = player {
-                        // TODO: Make dedicated function that handles errors
-                        if let Err(e) = client.send_message(game_end_message) {
-                            info!("Send error: {:?}", e);
-                        }
-                        if let Err(e) = client.send_message(close_message) {
-                            info!("Send error: {:?}", e);
-                        }
+                        client.send(game_end_message);
+                        client.send(close_message);
 
                         ranks[player_id] = current_rank;
                         somebody_eliminated = true;
@@ -125,22 +234,16 @@ pub fn game_loop(
         }
     }
 
-    // TODO: make game end function
     players
         .into_iter()
         .for_each(|player| {
             if let Some(mut client) = player {
-                // TODO: Make dedicated function that handles errors
-                if let Err(e) = client.send_message(game_end_message) {
-                    info!("Send error: {:?}", e);
-                }
-                if let Err(e) = client.send_message(close_message) {
-                    info!("Send error: {:?}", e);
-                }
+                client.send(game_end_message);
+                client.send(close_message);
             }
         });
     
-    // Fill winners ranks
+    // Fill ranks of winner
     for player_id in game.get_players() {
         ranks[player_id] = current_rank;
     }

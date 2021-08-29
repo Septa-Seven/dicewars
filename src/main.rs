@@ -5,11 +5,11 @@ mod network;
 mod cli;
 
 use clap::Clap;
-use websocket::sync::Server;
 use log::{LevelFilter};
 use log4rs::append::console::ConsoleAppender;
 use log4rs::config::{Appender, Config, Root};
 use log4rs::encode::pattern::PatternEncoder;
+use websocket::sync::Server;
 
 use crate::cli::Opt;
 
@@ -32,7 +32,6 @@ fn main() {
     let opt = Opt::parse();
 
     init_logging(opt.verbose);
-
     let server = Server::bind(opt.address).unwrap();
     let clients = network::connection_handler(server, opt.players);
 
@@ -44,5 +43,6 @@ fn main() {
         opt.spread,
         opt.grow,
         opt.eliminate_every_n_round,
+        opt.wait_timeout,
     );
 }

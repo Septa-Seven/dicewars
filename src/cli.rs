@@ -31,6 +31,9 @@ pub struct Opt {
     #[clap(long)]
     pub grow: f32,
 
+    #[clap(long)]
+    pub wait_timeout: u64,
+
     #[clap(short, long)]
     pub verbose: bool,
 }
