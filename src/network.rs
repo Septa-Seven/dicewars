@@ -105,6 +105,21 @@ impl PlayerCommunicator {
     }
 }
 
+fn send_state(game: &Game, players: &mut Vec<Option<PlayerCommunicator>>) {
+    info!("{}", serde_json::to_string(&game).unwrap());
+
+    let state = &Message::text(json!({"state": game}).to_string());
+    
+    players
+        .iter_mut()
+        .filter(|player| player.is_some())
+        .map(|player| player.as_mut().unwrap())
+        .for_each(|player| {
+            player.send(state);
+        });
+    
+}
+
 // TODO: Make GameConfig
 pub fn game_loop(
     players: Vec<Client<TcpStream>>,
@@ -151,18 +166,8 @@ pub fn game_loop(
     let close_message = &Message::close_because(1000, "Eliminated");
     
     while !game.is_ended() {
-        info!("{}", serde_json::to_string(&game).unwrap());
+        send_state(&game, &mut players);
 
-        let state = &Message::text(json!({"state": game}).to_string());
-        
-        players
-            .iter_mut()
-            .filter(|player| player.is_some())
-            .map(|player| player.as_mut().unwrap())
-            .for_each(|player| {
-                player.send(state);
-            });
-        
         {
             let player_id = game.get_current_player();
             let wrapped_player = &mut players[player_id];
@@ -233,6 +238,8 @@ pub fn game_loop(
             current_rank += 1;
         }
     }
+
+    send_state(&game, &mut players);
 
     players
         .into_iter()
