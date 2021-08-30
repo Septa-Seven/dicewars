@@ -1,8 +1,8 @@
+use indexmap::{IndexMap, IndexSet};
 use std::collections::{HashMap, HashSet};
-use crate::generation::AreaGraph;
 use rand::{thread_rng, Rng};
 use rand::seq::SliceRandom;
-use std::iter::repeat;
+use std::iter::{repeat, repeat_with};
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize)]
@@ -51,6 +51,41 @@ pub struct ValidationError {
     pub reason: String,
 }
 
+pub struct GameConfig {
+    players: usize,
+    areas: usize,
+    eliminate_every_n_round: u32,
+    max_area_size: usize,
+    min_area_size: usize,
+    spread: f32,
+    grow: f32,
+}
+
+impl GameConfig {
+    pub fn new(players: usize, eliminate_every_n_round: u32, areas: usize,
+        max_area_size: usize, min_area_size: usize, spread: f32, grow: f32) -> GameConfig {
+        
+        assert!(players > 1 && players < 9);
+        assert!(players <= areas);
+        assert!(0.0 <= grow && grow <= 1.0);
+        assert!(0.0 <= spread && spread <= 1.0);
+        assert!(min_area_size > 0);
+        assert!(max_area_size > 0);
+        assert!(eliminate_every_n_round > 0);
+        assert!(min_area_size < max_area_size);
+
+        GameConfig {
+            players,
+            areas,
+            eliminate_every_n_round,
+            max_area_size,
+            min_area_size,
+            spread,
+            grow,
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct Game {
     round: u32,
@@ -64,23 +99,19 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn new(players_count: usize, eliminate_every_n_round: u32,
-        areas_graph: AreaGraph, spread: f32, grow: f32) -> Game {
-        assert!(players_count > 1 && players_count < 9);
-        assert!(players_count <= areas_graph.len());
-        assert!(0.0 <= grow || grow <= 1.0);
-        assert!(0.0 <= spread || spread <= 1.0);
+    pub fn from_config(game_config: GameConfig) -> (Game, Areas) {
+        let (areas_coords, graph) = generate_areas(&game_config);
 
         let random = &mut thread_rng();
         let areas_per_player = (
-            (areas_graph.len() as f32 * spread) as usize / players_count
-        ).max(players_count);
+            (graph.len() as f32 * game_config.spread) as usize / game_config.players
+        ).max(game_config.players);
         
-        let players_area_count = areas_per_player * players_count;
-        let neutral_area_count = areas_graph.len() - players_area_count;
+        let players_area_count = areas_per_player * game_config.players;
+        let neutral_area_count = graph.len() - players_area_count;
         let area_pick_player: Vec<Option<usize>> = 
             // Each player take <areas_per_player> areas
-            (0..players_count)
+            (0..game_config.players)
             .map(|player_id| repeat(player_id).take(areas_per_player))
             .flatten()
             .map(|player| Some(player))
@@ -93,7 +124,7 @@ impl Game {
             .map(|player| Area::new(1, player))
             .collect();
         
-        let players = (0..players_count)
+        let players = (0..game_config.players)
             .map(|player_id| Player::new(player_id))
             .collect();
         
@@ -102,13 +133,13 @@ impl Game {
             current_player_index: 0,
             players: players,
             areas: areas,
-            graph: areas_graph,
-            eliminate_every_n_round: eliminate_every_n_round,
+            graph: graph,
+            eliminate_every_n_round: game_config.eliminate_every_n_round,
         };
 
         // Grow players
-        let additional_player_dices = ((areas_per_player * 7) as f32 * grow) as u32;
-        for player_id in 0..players_count {
+        let additional_player_dices = ((areas_per_player * 7) as f32 * game_config.grow) as u32;
+        for player_id in 0..game_config.players {
             let player_areas = ((player_id * areas_per_player)..((player_id + 1) * areas_per_player)).collect();
             game.grow_areas(player_areas, additional_player_dices);
         }
@@ -120,7 +151,7 @@ impl Game {
 
         game.areas.shuffle(random);
 
-        game
+        (game, areas_coords)
     }
 
     pub fn turn(&mut self, command: Command) -> Result<(), ValidationError> {
@@ -343,4 +374,190 @@ impl Game {
     pub fn get_players(&self) -> Vec<usize> {
         self.players.iter().map(|player| player.id).collect()
     }
+
+    pub fn graph_ref(&self) -> &AreaGraph {
+        &self.graph
+    }
+
+    pub fn get_eliminate_every_n_round(&self) -> u32 {
+        self.eliminate_every_n_round
+    }
+}
+
+type Point = (i32, i32);
+const EVEN_DIRECTIONS: [Point; 6] = [(1, 1), (1, 0), (1, -1), (0, -1), (-1, 0), (0, 1)];
+const ODD_DIRECTIONS: [Point; 6] = [(0, 1), (1, 0), (0, -1), (-1, -1), (-1, 0), (-1, 1), ];
+
+const BORDERS: [((f32, f32), (f32, f32)); 6] = [
+    ((0.0, 0.5), (0.5, 0.25)),
+    ((0.5, 0.25), (0.5, -0.25)),
+    ((0.5, -0.25), (0.0, -0.5)),
+    ((0.0, -0.5), (-0.5, -0.25)),
+    ((-0.5, -0.25), (-0.5, 0.25)),
+    ((-0.5, 0.25), (0.0, 0.5)),
+];
+
+pub type AreaGraph = Vec<HashSet<usize>>;
+pub type Areas = Vec<HashSet<Point>>;
+
+fn generate_areas(game_config: &GameConfig) -> (Areas, AreaGraph) {
+    let random = &mut rand::thread_rng();
+
+    let area_size_range = game_config.min_area_size..game_config.max_area_size + 1;
+    let sizes: Vec<usize> = repeat_with(|| random.gen_range(area_size_range.clone()))
+        .take(game_config.areas)
+        .collect();
+    
+    let mut graph: Vec<HashSet<usize>> = repeat_with(HashSet::new)
+        .take(game_config.areas)
+        .collect();
+    
+    let mut possible_start = IndexSet::new();
+    possible_start.insert((0, 0));
+
+    let mut field = HashMap::with_capacity(sizes.iter().sum());
+    
+    for area_index in 0..game_config.areas {
+        'retry_area_generation: loop {
+            // Pick empty hex to start area from
+            let start_hex_index= random.gen_range(0..possible_start.len());
+            let &start_hex = possible_start.get_index(start_hex_index).unwrap();
+
+
+            let mut neighbors_count = IndexMap::new();
+            let mut max_neighbors_count = 0;
+            neighbors_count.insert((0, 0), 0);
+        
+            let mut count_groups = vec![IndexSet::new(); 5];
+            count_groups[max_neighbors_count].insert(start_hex);
+            
+            let mut size = sizes[area_index];
+            let mut area = Vec::new();
+            
+            while size > 0 {
+                let expand_hex;
+                {
+                    let group = loop {
+                        let group = &mut count_groups[max_neighbors_count];
+                        if !group.is_empty() {
+                            break group;
+                        }
+                        else if max_neighbors_count == 0 {
+                            for hex in area.iter() {
+                                field.remove(hex);
+                            }
+                            continue 'retry_area_generation;
+                        }
+                        else {
+                            max_neighbors_count -= 1;
+                        }
+                    };
+                    
+                    let expand_hex_index = random.gen_range(0..group.len());
+                    expand_hex = *group.get_index(expand_hex_index).unwrap();
+                    group.remove(&expand_hex);
+                }
+
+                field.insert(expand_hex, area_index);
+                area.push(expand_hex);
+
+                let directions = if expand_hex.1 % 2 == 0 {EVEN_DIRECTIONS} else {ODD_DIRECTIONS};
+                for direction in directions.iter() {
+                    let neighbor = (expand_hex.0 + direction.0, expand_hex.1 + direction.1);
+                    
+                    if let Some(&neighbor_area_index) = field.get(&neighbor) {
+                        if neighbor_area_index != area_index {
+                            graph[neighbor_area_index].insert(area_index);
+                            graph[area_index].insert(neighbor_area_index);
+                        }
+                    } else {
+                        let count = if let Some(count) = neighbors_count.get_mut(&neighbor) {
+                            {
+                                let group = &mut count_groups[*count];
+                                group.remove(&neighbor);
+                            }
+                            *count += 1;
+                            *count
+                        } else {
+                            neighbors_count.insert(neighbor, 0);
+                            0
+                        };
+
+                        if count != 6 {
+                            let group = &mut count_groups[count];
+                            group.insert(neighbor);
+                        
+                            if max_neighbors_count < count {
+                                max_neighbors_count = count;
+                            }    
+                        }
+                    }
+                }
+
+                size -= 1;
+            }
+            
+            possible_start.extend(neighbors_count.keys());
+
+            for a in area.iter() {
+                possible_start.remove(a);
+            }
+            break;
+        }
+    }
+
+    let mut areas = vec![HashSet::new(); game_config.areas];
+
+    for (position, area) in field {
+        areas[area].insert(position);
+    }
+
+    (areas, graph)
+}
+
+pub fn get_polygons(areas: Areas) -> Vec<Vec<(f32, f32)>> {
+    
+    areas
+        .into_iter()
+        .map(|area| {
+            let mut polygon = Vec::new();
+            
+            for hex in area.iter() {
+                let hex_real_coords = (hex.0 as f32 - 0.5 * (hex.1 % 2 != 0) as u32 as f32, hex.1 as f32 * 0.75);
+
+                let directions = if hex.1 % 2 == 0 {EVEN_DIRECTIONS} else {ODD_DIRECTIONS};
+                for (direction, border_direction) in directions.iter().zip(BORDERS.iter()) {
+                    let neighbor = (hex.0 + direction.0, hex.1 + direction.1);
+
+                    if !area.contains(&neighbor) {
+                        let border = (
+                            (hex_real_coords.0 + border_direction.0.0, hex_real_coords.1 + border_direction.0.1),
+                            (hex_real_coords.0 + border_direction.1.0, hex_real_coords.1 + border_direction.1.1),
+                        );
+                        polygon.push(border);
+                    }
+                }
+            }
+
+            // Sort polygon edges
+            for i in 0..polygon.len() - 2 {
+                let edge = polygon[i];
+                let start_check = i + 1;
+                
+                for j in start_check..polygon.len() {
+                    let check = polygon[j];
+
+                    if edge.1 == check.0 {
+                        polygon.swap(start_check, j);
+                        break;
+                    }
+                }
+            }
+            
+            polygon
+                .iter()
+                .map(|edge| edge.0)
+                .collect()
+        })
+    .collect()
 }

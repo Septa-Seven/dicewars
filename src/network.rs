@@ -9,8 +9,7 @@ use websocket::server::NoTlsAcceptor;
 use websocket::{Message, OwnedMessage};
 use websocket::sync::{Client, Server, Writer};
 use serde_json::{Value, json};
-use crate::game::{Command, Game};
-use crate::generation::{generate_areas, get_polygons};
+use crate::game::{Command, Game, GameConfig, get_polygons};
 
 
 enum CommandError {
@@ -105,30 +104,20 @@ impl PlayerCommunicator {
     }
 }
 
-fn send_state(game: &Game, players: &mut Vec<Option<PlayerCommunicator>>) {
-    info!("{}", serde_json::to_string(&game).unwrap());
-
-    let state = &Message::text(json!({"state": game}).to_string());
-    
+fn send_all_alive(message: &Message, players: &mut Vec<Option<PlayerCommunicator>>) {
     players
         .iter_mut()
         .filter(|player| player.is_some())
         .map(|player| player.as_mut().unwrap())
         .for_each(|player| {
-            player.send(state);
+            player.send(message);
         });
-    
 }
 
 // TODO: Make GameConfig
 pub fn game_loop(
     players: Vec<Client<TcpStream>>,
-    areas_count: usize,
-    max_area_size: usize,
-    min_area_size: usize,
-    spread: f32,
-    grow: f32,
-    eliminate_every_n_round: u32,
+    game_config: GameConfig,
     wait_timeout: u64,
 ) {
     let players_count = players.len();
@@ -137,24 +126,24 @@ pub fn game_loop(
         .map(|player| Some(PlayerCommunicator::new(player)))
         .collect();
 
-    let (areas, graph) = generate_areas(areas_count, min_area_size..max_area_size + 1);
     let mut ranks = vec![0usize; players_count];
     let mut current_rank = 0;
     
     let mut game;
     {
-        // Add timeout to config
+        let areas;
+        (game, areas) = Game::from_config(game_config);
+
+        // TODO: Add command line flag "--polygons" that enables "areas" field in config 
+        //  There is no need to get this polygons if you don't visualize game.
         let mut config = json!({
             "areas": get_polygons(areas),
-            "graph": graph,
-            "eliminate_every_n_round": eliminate_every_n_round,
+            "graph": game.graph_ref(),
+            "eliminate_every_n_round": game.get_eliminate_every_n_round(),
+            "timeout": wait_timeout
         });
         info!("{}", serde_json::to_string(&config).unwrap());
         
-        game = Game::new(
-            players_count, eliminate_every_n_round, graph,
-            spread, grow
-        );
         
         for (player_id, player) in players.iter_mut().enumerate() {
             config["me"] = Value::from(player_id);
@@ -162,11 +151,12 @@ pub fn game_loop(
         }
     }
 
-    let game_end_message = &Message::text(json!({"end": {}}).to_string());
     let close_message = &Message::close_because(1000, "Eliminated");
     
     while !game.is_ended() {
-        send_state(&game, &mut players);
+        info!("{}", serde_json::to_string(&game).unwrap());
+        let state  = &Message::text(json!({"state": game}).to_string());
+        send_all_alive(state, &mut players);
 
         {
             let player_id = game.get_current_player();
@@ -182,7 +172,7 @@ pub fn game_loop(
                             (Command::EndTurn, Some("Disconnected"))
                         }
                         Err(CommandError::ParseError) => {
-                            (Command::EndTurn, Some("ParseError"))
+                            (Command::EndTurn, Some("Parse error"))
                         }
                         Err(CommandError::ReadTimeoutError) => {
                             (Command::EndTurn, Some("Read timeout"))
@@ -212,6 +202,8 @@ pub fn game_loop(
             eliminated[player_id] = false;
         }
         let mut somebody_eliminated = false;
+
+        let end_message = &Message::text(json!({"end": game}).to_string());
         
         players = eliminated
             .into_iter()
@@ -220,7 +212,7 @@ pub fn game_loop(
             .map(|(player_id, (eliminated, player))| {
                 if eliminated {
                     if let Some(mut client) = player {
-                        client.send(game_end_message);
+                        client.send(end_message);
                         client.send(close_message);
 
                         ranks[player_id] = current_rank;
@@ -238,18 +230,13 @@ pub fn game_loop(
             current_rank += 1;
         }
     }
-
-    send_state(&game, &mut players);
-
-    players
-        .into_iter()
-        .for_each(|player| {
-            if let Some(mut client) = player {
-                client.send(game_end_message);
-                client.send(close_message);
-            }
-        });
     
+    let end_message = &Message::text(json!({"end": game}).to_string());
+    send_all_alive(end_message, &mut players);
+    send_all_alive(close_message, &mut players);
+    
+    info!("{}", serde_json::to_string(&game).unwrap());
+
     // Fill ranks of winner
     for player_id in game.get_players() {
         ranks[player_id] = current_rank;
