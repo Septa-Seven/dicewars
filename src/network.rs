@@ -114,7 +114,6 @@ fn send_all_alive(message: &Message, players: &mut Vec<Option<PlayerCommunicator
         });
 }
 
-// TODO: Make GameConfig
 pub fn game_loop(
     players: Vec<Client<TcpStream>>,
     game_config: GameConfig,

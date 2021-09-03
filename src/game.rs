@@ -300,19 +300,19 @@ impl Game {
         self.current_player_index += 1;
         
         // Elimination
-        let mut area_counts: HashMap<usize, u32> = self.players
+        let mut dice_counts: HashMap<usize, u32> = self.players
             .iter()
-            .map(|player| (player.id, 0))
+            .map(|player| (player.id, player.savings))
             .collect();
         
         for area in self.areas.iter() {
             if let Some(owner) = area.owner {
-                *area_counts.get_mut(&owner).unwrap() += 1;
+                *dice_counts.get_mut(&owner).unwrap() += area.dices;
             }
         }
 
-        let mut remove_players: HashSet<usize> = area_counts
-            .drain_filter(|_, &mut area_count| area_count == 0)
+        let mut remove_players: HashSet<usize> = dice_counts
+            .drain_filter(|_, &mut dice_count| dice_count == 0)
             .map(|(player_id, _)| player_id)
             .collect();
         
@@ -321,9 +321,9 @@ impl Game {
             self.current_player_index = 0;
 
             if self.round % self.eliminate_every_n_round == 0 {
-                let min_area_count = *area_counts.values().min().unwrap();
-                let eliminated_players: HashSet<_> = area_counts
-                    .drain_filter(|_, &mut area_count| area_count == min_area_count)
+                let min_dice_count = *dice_counts.values().min().unwrap();
+                let eliminated_players: HashSet<_> = dice_counts
+                    .drain_filter(|_, &mut dice_count| dice_count == min_dice_count)
                     .map(|(player_id, _)| player_id)
                     .collect();
 
