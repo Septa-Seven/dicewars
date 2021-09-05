@@ -1,4 +1,4 @@
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexSet;
 use std::collections::{HashMap, HashSet};
 use rand::{thread_rng, Rng};
 use rand::seq::SliceRandom;
@@ -420,13 +420,11 @@ fn generate_areas(game_config: &GameConfig) -> (Areas, AreaGraph) {
     for area_index in 0..game_config.areas {
         'retry_area_generation: loop {
             // Pick empty hex to start area from
-            let start_hex_index= random.gen_range(0..possible_start.len());
+            let start_hex_index = random.gen_range(0..possible_start.len());
             let &start_hex = possible_start.get_index(start_hex_index).unwrap();
 
-
-            let mut neighbors_count = IndexMap::new();
+            let mut neighbors_count = HashMap::new();
             let mut max_neighbors_count = 0;
-            neighbors_count.insert((0, 0), 0);
         
             let mut count_groups = vec![IndexSet::new(); 5];
             count_groups[max_neighbors_count].insert(start_hex);
@@ -473,14 +471,14 @@ fn generate_areas(game_config: &GameConfig) -> (Areas, AreaGraph) {
                     } else {
                         let count = if let Some(count) = neighbors_count.get_mut(&neighbor) {
                             {
-                                let group = &mut count_groups[*count];
+                                let group: &mut IndexSet<_> = &mut count_groups[*count];
                                 group.remove(&neighbor);
                             }
                             *count += 1;
                             *count
                         } else {
-                            neighbors_count.insert(neighbor, 0);
-                            0
+                            neighbors_count.insert(neighbor, 1);
+                            1
                         };
 
                         if count != 6 {
@@ -489,7 +487,7 @@ fn generate_areas(game_config: &GameConfig) -> (Areas, AreaGraph) {
                         
                             if max_neighbors_count < count {
                                 max_neighbors_count = count;
-                            }    
+                            }
                         }
                     }
                 }
