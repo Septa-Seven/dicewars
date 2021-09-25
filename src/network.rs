@@ -136,7 +136,7 @@ pub fn game_loop(
         // TODO: Add command line flag "--polygons" that enables "areas" field in config 
         //  There is no need to get this polygons if you don't visualize game.
         let mut config = json!({
-            "areas": get_polygons(areas),
+            "areas": get_polygons(areas, 0.5),
             "graph": game.graph_ref(),
             "eliminate_every_n_round": game.get_eliminate_every_n_round(),
             "timeout": wait_timeout

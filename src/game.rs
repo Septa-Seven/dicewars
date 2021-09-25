@@ -386,16 +386,11 @@ impl Game {
 
 type Point = (i32, i32);
 const EVEN_DIRECTIONS: [Point; 6] = [(1, 1), (1, 0), (1, -1), (0, -1), (-1, 0), (0, 1)];
-const ODD_DIRECTIONS: [Point; 6] = [(0, 1), (1, 0), (0, -1), (-1, -1), (-1, 0), (-1, 1), ];
+const ODD_DIRECTIONS: [Point; 6] = [(0, 1), (1, 0), (0, -1), (-1, -1), (-1, 0), (-1, 1)];
 
-const BORDERS: [((f32, f32), (f32, f32)); 6] = [
-    ((0.0, 0.5), (0.5, 0.25)),
-    ((0.5, 0.25), (0.5, -0.25)),
-    ((0.5, -0.25), (0.0, -0.5)),
-    ((0.0, -0.5), (-0.5, -0.25)),
-    ((-0.5, -0.25), (-0.5, 0.25)),
-    ((-0.5, 0.25), (0.0, 0.5)),
-];
+// (60.0 * PI / 180.0).cos();
+const COS: f32 = 0.49999787927;
+
 
 pub type AreaGraph = Vec<HashSet<usize>>;
 pub type Areas = Vec<HashSet<Point>>;
@@ -513,25 +508,54 @@ fn generate_areas(game_config: &GameConfig) -> (Areas, AreaGraph) {
     (areas, graph)
 }
 
-pub fn get_polygons(areas: Areas) -> Vec<Vec<(f32, f32)>> {
+pub fn get_polygons(areas: Areas, width: f32) -> Vec<Vec<(f32, f32)>> {
+    // Width of hex side is 0.5
+    // TODO: Generate borders based on any width
+    let width_half = width / 2.0;
+    let r = (
+        width * width + width_half * width_half - width * width * COS
+    ).sqrt();
     
+    let borders = [
+        ((0.0, width), (r, width_half)),
+        ((r, width_half), (r, -width_half)),
+        ((r, -width_half), (0.0, -width)),
+        ((0.0, -width), (-r, -width_half)),
+        ((-r, -width_half), (-r, width_half)),
+        ((-r, width_half), (0.0, width)),
+    ];
+    let y_shift = 1.5 * width;
+    println!("{}, {}, {:?}", r, y_shift, borders);
+
     areas
         .into_iter()
         .map(|area| {
             let mut polygon = Vec::new();
             
             for hex in area.iter() {
-                let hex_real_coords = (hex.0 as f32 - 0.5 * (hex.1 % 2 != 0) as u32 as f32, hex.1 as f32 * 0.75);
-
+                let hex_real_coords = (
+                    r * (2.0 * hex.0 as f32 - (hex.1 % 2 != 0) as u32 as f32),
+                    hex.1 as f32 * y_shift
+                );
+                
                 let directions = if hex.1 % 2 == 0 {EVEN_DIRECTIONS} else {ODD_DIRECTIONS};
-                for (direction, border_direction) in directions.iter().zip(BORDERS.iter()) {
+                for (direction, border_direction) in directions.iter().zip(borders.iter()) {
                     let neighbor = (hex.0 + direction.0, hex.1 + direction.1);
 
                     if !area.contains(&neighbor) {
                         let border = (
-                            (hex_real_coords.0 + border_direction.0.0, hex_real_coords.1 + border_direction.0.1),
-                            (hex_real_coords.0 + border_direction.1.0, hex_real_coords.1 + border_direction.1.1),
+                            (
+                                ((hex_real_coords.0 + border_direction.0.0) * 1000.0).round() / 1000.0,
+                                ((hex_real_coords.1 + border_direction.0.1) * 1000.0).round() / 1000.0
+                            ),
+                            (
+                                ((hex_real_coords.0 + border_direction.1.0) * 1000.0).round() / 1000.0,
+                                ((hex_real_coords.1 + border_direction.1.1) * 1000.0).round() / 1000.0,
+                            )
                         );
+
+                        println!("{:?}", border);
+                        
                         polygon.push(border);
                     }
                 }
