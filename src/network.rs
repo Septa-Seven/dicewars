@@ -139,7 +139,8 @@ pub fn game_loop(
             "areas": get_polygons(areas, 0.5),
             "graph": game.graph_ref(),
             "eliminate_every_n_round": game.get_eliminate_every_n_round(),
-            "timeout": wait_timeout
+            "timeout": wait_timeout,
+            "players": game.get_players().len(),
         });
         info!("{}", serde_json::to_string(&config).unwrap());
         
