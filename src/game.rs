@@ -438,6 +438,11 @@ fn generate_areas(game_config: &GameConfig) -> (Areas, AreaGraph) {
                         else if max_neighbors_count == 0 {
                             for hex in area.iter() {
                                 field.remove(hex);
+                                let neighbors: Vec<_> = graph[area_index].iter().copied().collect();
+                                for neigbor_index in neighbors {
+                                    graph[neigbor_index].remove(&area_index);
+                                }
+                                graph[area_index].clear();
                             }
                             continue 'retry_area_generation;
                         }
