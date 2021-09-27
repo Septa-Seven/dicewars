@@ -225,6 +225,10 @@ impl Game {
                         .unwrap();
                     
                     self.players.remove(offended_index);
+
+                    if offended_index < self.current_player_index {
+                        self.current_player_index -= 1;
+                    }
                 }
             }
         }
