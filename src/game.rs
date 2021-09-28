@@ -534,7 +534,6 @@ pub fn get_polygons(areas: Areas, width: f32) -> Vec<Vec<(f32, f32)>> {
         ((-r, width_half), (0.0, width)),
     ];
     let y_shift = 1.5 * width;
-    println!("{}, {}, {:?}", r, y_shift, borders);
 
     areas
         .into_iter()
@@ -563,8 +562,6 @@ pub fn get_polygons(areas: Areas, width: f32) -> Vec<Vec<(f32, f32)>> {
                             )
                         );
 
-                        println!("{:?}", border);
-                        
                         polygon.push(border);
                     }
                 }
