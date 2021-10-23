@@ -4,7 +4,6 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use std::thread;
 use std::net::TcpStream;
-use log::{info, debug};
 use websocket::server::NoTlsAcceptor;
 use websocket::{Message, OwnedMessage};
 use websocket::sync::{Client, Server, Writer};
@@ -28,7 +27,6 @@ struct PlayerCommunicator {
 impl PlayerCommunicator {
     fn new(player: Client<TcpStream>) -> PlayerCommunicator {
         let (mut reader, writer) = player.split().unwrap();
-
         let queue = Arc::new(Mutex::new(VecDeque::new()));
         let queue_copy = queue.clone();
 
@@ -39,9 +37,8 @@ impl PlayerCommunicator {
         let disconnected_copy = disconnected.clone();
         
         thread::spawn(move || {
-            loop {
-                let message = reader.recv_message();
-                
+            for message in reader.incoming_messages() {
+
                 if let Ok(OwnedMessage::Close(_)) | Err(_) = message {
                     disconnected_copy.store(true, Ordering::Relaxed);
                     message_event_copy.notify_all();
@@ -55,7 +52,7 @@ impl PlayerCommunicator {
                     } else {
                         Err(CommandError::ParseError)
                     };
-
+                    
                     let mut locked_queue = queue_copy.lock().unwrap();
                     locked_queue.push_back(command_result);
                     message_event_copy.notify_all();
@@ -73,7 +70,7 @@ impl PlayerCommunicator {
 
     fn send(&mut self, message: &Message) {
         if let Err(e) = self.writer.send_message(message) {
-            debug!("Send error: {:?}", e);
+            eprintln!("Send error {:?}", e);
         }
     }
 
@@ -91,7 +88,6 @@ impl PlayerCommunicator {
         let (mut locked_queue, _) = self.message_event.wait_timeout(
             locked_queue, Duration::from_millis(wait_timeout)
         ).unwrap();
-        
         // Then try to pop message one more time
         if self.disconnected.load(Ordering::Relaxed) {
             return Err(CommandError::Disconnected);
@@ -142,7 +138,7 @@ pub fn game_loop(
             "timeout": wait_timeout,
             "players": game.get_players().len(),
         });
-        info!("{}", serde_json::to_string(&config).unwrap());
+        println!("{}", serde_json::to_string(&config).unwrap());
         
         
         for (player_id, player) in players.iter_mut().enumerate() {
@@ -154,8 +150,10 @@ pub fn game_loop(
     let close_message = &Message::close_because(1000, "Eliminated");
     
     while !game.is_ended() {
-        info!("{}", serde_json::to_string(&game).unwrap());
-        let state  = &Message::text(json!({"state": game}).to_string());
+        println!("{}", serde_json::to_string(&game).unwrap());
+        let json_value = json!({"state": serde_json::to_value(&game).unwrap()});
+        let state  = &Message::text(json_value.to_string());
+
         send_all_alive(state, &mut players);
 
         {
@@ -181,20 +179,20 @@ pub fn game_loop(
                 }
                 None => unreachable!("Eliminated player can't turn")
             };
-            
-            let mut state = json!({
-                "player": player_id,
+
+            let mut command_json = json!({
+                "player_id": player_id,
                 "command": serde_json::to_value(&command).unwrap()
             });
 
             let turn_result = game.turn(command);
             if let Some(err_msg) = command_error {
-                state["error"] = Value::String(err_msg.to_string());
+                command_json["error"] = Value::String(err_msg.to_string());
             } else if let Err(err) = turn_result {
-                state["error"] = Value::String(err.reason);
+                command_json["error"] = Value::String(err.reason);
             }
 
-            info!("{}", state.to_string());
+            println!("{}", command_json.to_string());
         }
 
         let mut eliminated = vec![true; players_count];
@@ -235,8 +233,8 @@ pub fn game_loop(
     send_all_alive(end_message, &mut players);
     send_all_alive(close_message, &mut players);
     
-    info!("{}", serde_json::to_string(&game).unwrap());
-
+    println!("{}", serde_json::to_string(&game).unwrap());
+    
     // Fill ranks of winner
     for player_id in game.get_players() {
         ranks[player_id] = current_rank;
@@ -247,7 +245,7 @@ pub fn game_loop(
         ranks[i] = current_rank - ranks[i];
     }
     
-    info!("{}", json!({"ranks": ranks}).to_string());
+    println!("{}", json!({"ranks": ranks}).to_string());
 }
 
 pub fn connection_handler(server: Server<NoTlsAcceptor>, number_of_clients: usize) -> Vec<Client<TcpStream>>{
@@ -255,7 +253,7 @@ pub fn connection_handler(server: Server<NoTlsAcceptor>, number_of_clients: usiz
     
     for connection in server.filter_map(Result::ok) {
         let client = connection.accept().unwrap();
-        info!("Connection: {}", client.peer_addr().unwrap());
+        println!("Connection: {}", client.peer_addr().unwrap());
 
         clients.push(client);
 

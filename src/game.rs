@@ -1,9 +1,11 @@
-use indexmap::IndexSet;
+use indexmap::{IndexSet, indexmap};
 use std::collections::{HashMap, HashSet};
-use rand::{thread_rng, Rng};
+use rand::{Rng, SeedableRng};
 use rand::seq::SliceRandom;
+use rand_chacha::ChaCha8Rng;
 use std::iter::{repeat, repeat_with};
 use serde::{Serialize, Deserialize};
+
 
 #[derive(Serialize)]
 struct Player {
@@ -34,8 +36,7 @@ impl Area {
         }
     }
 
-    fn roll_dices(&self) -> u32 {
-        let mut random = thread_rng();
+    fn roll_dices(&self, random: &mut ChaCha8Rng) -> u32 {
         random.gen_range(self.dices..self.dices * 6 + 1)
     }
 }
@@ -59,11 +60,14 @@ pub struct GameConfig {
     min_area_size: usize,
     spread: f32,
     grow: f32,
+    random: ChaCha8Rng,
 }
 
 impl GameConfig {
     pub fn new(players: usize, eliminate_every_n_round: u32, areas: usize,
-        max_area_size: usize, min_area_size: usize, spread: f32, grow: f32) -> GameConfig {
+        max_area_size: usize, min_area_size: usize, spread: f32, grow: f32,
+        seed: u64
+    ) -> GameConfig {
         
         assert!(players > 1 && players < 9);
         assert!(players <= areas);
@@ -82,6 +86,7 @@ impl GameConfig {
             min_area_size,
             spread,
             grow,
+            random: ChaCha8Rng::seed_from_u64(seed)
         }
     }
 }
@@ -96,13 +101,13 @@ pub struct Game {
     #[serde(skip)]
     graph: AreaGraph,
     areas: Vec<Area>,
+    #[serde(skip)]
+    random: ChaCha8Rng,
 }
 
 impl Game {
-    pub fn from_config(game_config: GameConfig) -> (Game, Areas) {
-        let (areas_coords, graph) = generate_areas(&game_config);
-
-        let random = &mut thread_rng();
+    pub fn from_config(mut game_config: GameConfig) -> (Game, Areas) {
+        let (areas_coords, graph) = generate_areas(&mut game_config);
         let areas_per_player = (
             (graph.len() as f32 * game_config.spread) as usize / game_config.players
         ).max(game_config.players);
@@ -135,6 +140,7 @@ impl Game {
             areas: areas,
             graph: graph,
             eliminate_every_n_round: game_config.eliminate_every_n_round,
+            random: game_config.random,
         };
 
         // Grow players
@@ -149,9 +155,13 @@ impl Game {
         let neutral_areas = (game.areas.len() - neutral_area_count..game.areas.len()).collect();
         game.grow_areas(neutral_areas, additional_neutral_dices);
 
-        game.areas.shuffle(random);
+        game.shuffle_areas();
 
         (game, areas_coords)
+    }
+
+    fn shuffle_areas(&mut self) {
+        self.areas.shuffle(&mut self.random);
     }
 
     pub fn turn(&mut self, command: Command) -> Result<(), ValidationError> {
@@ -203,8 +213,8 @@ impl Game {
         }
 
         // Fight
-        let from_roll = self.areas[from].roll_dices();
-        let to_roll = self.areas[to].roll_dices();
+        let from_roll = self.areas[from].roll_dices(&mut self.random);
+        let to_roll = self.areas[to].roll_dices(&mut self.random);
 
         if from_roll > to_roll {
             self.areas[to].dices = self.areas[from].dices - 1;
@@ -348,9 +358,8 @@ impl Game {
     }
 
     fn grow_areas(&mut self, mut area_indices: Vec<usize>, mut count: u32) -> u32 {
-        let random = &mut thread_rng();
         while count > 0 && !area_indices.is_empty() {
-            let i = random.gen_range(0..area_indices.len());
+            let i = self.random.gen_range(0..area_indices.len());
             let area = &mut self.areas[area_indices[i]];
             
             // Can't grow area beyond maximum size
@@ -399,9 +408,9 @@ const COS: f32 = 0.49999787927;
 pub type AreaGraph = Vec<HashSet<usize>>;
 pub type Areas = Vec<HashSet<Point>>;
 
-fn generate_areas(game_config: &GameConfig) -> (Areas, AreaGraph) {
-    let random = &mut rand::thread_rng();
-
+fn generate_areas(game_config: &mut GameConfig) -> (Areas, AreaGraph) {
+    let random = &mut game_config.random;
+    
     let area_size_range = game_config.min_area_size..game_config.max_area_size + 1;
     let sizes: Vec<usize> = repeat_with(|| random.gen_range(area_size_range.clone()))
         .take(game_config.areas)
@@ -422,7 +431,7 @@ fn generate_areas(game_config: &GameConfig) -> (Areas, AreaGraph) {
             let start_hex_index = random.gen_range(0..possible_start.len());
             let &start_hex = possible_start.get_index(start_hex_index).unwrap();
 
-            let mut neighbors_count = HashMap::new();
+            let mut neighbors_count = indexmap!();
             let mut max_neighbors_count = 0;
         
             let mut count_groups = vec![IndexSet::new(); 5];
@@ -518,8 +527,6 @@ fn generate_areas(game_config: &GameConfig) -> (Areas, AreaGraph) {
 }
 
 pub fn get_polygons(areas: Areas, width: f32) -> Vec<Vec<(f32, f32)>> {
-    // Width of hex side is 0.5
-    // TODO: Generate borders based on any width
     let width_half = width / 2.0;
     let r = (
         width * width + width_half * width_half - width * width * COS

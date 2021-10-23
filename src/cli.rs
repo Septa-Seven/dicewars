@@ -34,4 +34,7 @@ pub struct Opt {
 
     #[clap(short, long)]
     pub verbose: bool,
+
+    #[clap(long)]
+    pub seed: Option<u64>,
 }
