@@ -1,6 +1,7 @@
 use indexmap::{IndexSet, indexmap};
+use serde::ser::SerializeTuple;
 use std::collections::{HashMap, HashSet};
-use rand::{Rng, SeedableRng};
+use rand::{Rng, SeedableRng, thread_rng};
 use rand::seq::SliceRandom;
 use rand_chacha::ChaCha8Rng;
 use std::iter::{repeat, repeat_with};
@@ -397,16 +398,47 @@ impl Game {
     }
 }
 
-type Point = (i32, i32);
-const EVEN_DIRECTIONS: [Point; 6] = [(1, 1), (1, 0), (1, -1), (0, -1), (-1, 0), (0, 1)];
-const ODD_DIRECTIONS: [Point; 6] = [(0, 1), (1, 0), (0, -1), (-1, -1), (-1, 0), (-1, 1)];
+#[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
+pub struct Point<T> {
+    pub x: T,
+    pub y: T,
+}
+
+impl Serialize for Point<f32> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+            S: serde::Serializer {
+        let mut tup = serializer.serialize_tuple(2)?;
+        tup.serialize_element(&self.x)?;
+        tup.serialize_element(&self.y)?;
+        tup.end()
+    }
+}
+
+const EVEN_DIRECTIONS: [Point<i32>; 6] = [
+    Point {x: 1, y: 1},
+    Point {x: 1, y: 0},
+    Point {x: 1, y: -1},
+    Point {x: 0, y: -1},
+    Point {x: -1, y: 0},
+    Point {x: 0, y: 1},
+];
+
+const ODD_DIRECTIONS: [Point<i32>; 6] = [
+    Point {x: 0, y: 1},
+    Point {x: 1, y: 0},
+    Point {x: 0, y: -1},
+    Point {x: -1, y: -1},
+    Point {x: -1, y: 0},
+    Point {x: -1, y: 1},
+];
 
 // (60.0 * PI / 180.0).cos();
 const COS: f32 = 0.49999787927;
 
 
 pub type AreaGraph = Vec<HashSet<usize>>;
-pub type Areas = Vec<HashSet<Point>>;
+pub type Areas = Vec<HashSet<Point<i32>>>;
 
 fn generate_areas(game_config: &mut GameConfig) -> (Areas, AreaGraph) {
     let random = &mut game_config.random;
@@ -421,7 +453,7 @@ fn generate_areas(game_config: &mut GameConfig) -> (Areas, AreaGraph) {
         .collect();
     
     let mut possible_start = IndexSet::new();
-    possible_start.insert((0, 0));
+    possible_start.insert(Point {x: 0, y: 0});
 
     let mut field = HashMap::with_capacity(sizes.iter().sum());
     
@@ -472,9 +504,12 @@ fn generate_areas(game_config: &mut GameConfig) -> (Areas, AreaGraph) {
                 field.insert(expand_hex, area_index);
                 area.push(expand_hex);
 
-                let directions = if expand_hex.1 % 2 == 0 {EVEN_DIRECTIONS} else {ODD_DIRECTIONS};
+                let directions = if expand_hex.y % 2 == 0 {EVEN_DIRECTIONS} else {ODD_DIRECTIONS};
                 for direction in directions.iter() {
-                    let neighbor = (expand_hex.0 + direction.0, expand_hex.1 + direction.1);
+                    let neighbor = Point {
+                        x: expand_hex.x + direction.x,
+                        y: expand_hex.y + direction.y,
+                    };
                     
                     if let Some(&neighbor_area_index) = field.get(&neighbor) {
                         if neighbor_area_index != area_index {
@@ -526,19 +561,22 @@ fn generate_areas(game_config: &mut GameConfig) -> (Areas, AreaGraph) {
     (areas, graph)
 }
 
-pub fn get_polygons(areas: Areas, width: f32) -> Vec<Vec<(f32, f32)>> {
+pub type Polygon = Vec<Point<f32>>;
+
+pub fn get_polygons(areas: Areas, width: f32) -> Vec<Polygon> {
     let width_half = width / 2.0;
     let r = (
         width * width + width_half * width_half - width * width * COS
     ).sqrt();
     
     let borders = [
-        ((0.0, width), (r, width_half)),
-        ((r, width_half), (r, -width_half)),
-        ((r, -width_half), (0.0, -width)),
-        ((0.0, -width), (-r, -width_half)),
-        ((-r, -width_half), (-r, width_half)),
-        ((-r, width_half), (0.0, width)),
+        Point {x: 0.0, y: width},
+        Point {x: r, y: width_half},
+        Point {x: r, y: -width_half},
+        Point {x: 0.0, y: -width},
+        Point {x: -r, y: -width_half},
+        Point {x: -r, y: width_half},
+        Point {x: 0.0, y: width},
     ];
     let y_shift = 1.5 * width;
 
@@ -548,25 +586,31 @@ pub fn get_polygons(areas: Areas, width: f32) -> Vec<Vec<(f32, f32)>> {
             let mut polygon = Vec::new();
             
             for hex in area.iter() {
-                let hex_real_coords = (
-                    r * (2.0 * hex.0 as f32 - (hex.1 % 2 != 0) as u32 as f32),
-                    hex.1 as f32 * y_shift
-                );
+                let hex_real = Point {
+                    x: r * (2.0 * hex.x as f32 - (hex.y % 2 != 0) as u32 as f32),
+                    y: hex.y as f32 * y_shift
+                };
                 
-                let directions = if hex.1 % 2 == 0 {EVEN_DIRECTIONS} else {ODD_DIRECTIONS};
-                for (direction, border_direction) in directions.iter().zip(borders.iter()) {
-                    let neighbor = (hex.0 + direction.0, hex.1 + direction.1);
+                let directions = if hex.y % 2 == 0 {EVEN_DIRECTIONS} else {ODD_DIRECTIONS};
+
+                for (border_index, direction) in directions.iter().enumerate() {
+                    let border_start = &borders[border_index];
+                    let border_end = &borders[border_index + 1];
+                    let neighbor = Point {
+                        x: hex.x + direction.x,
+                        y: hex.y + direction.y
+                    };
 
                     if !area.contains(&neighbor) {
                         let border = (
-                            (
-                                ((hex_real_coords.0 + border_direction.0.0) * 1000.0).round() / 1000.0,
-                                ((hex_real_coords.1 + border_direction.0.1) * 1000.0).round() / 1000.0
-                            ),
-                            (
-                                ((hex_real_coords.0 + border_direction.1.0) * 1000.0).round() / 1000.0,
-                                ((hex_real_coords.1 + border_direction.1.1) * 1000.0).round() / 1000.0,
-                            )
+                            Point {
+                                x: round_digits(hex_real.x + border_start.x, 3),
+                                y: round_digits(hex_real.y + border_start.y, 3),
+                            },
+                            Point {
+                                x: round_digits(hex_real.x + border_end.x, 3),
+                                y: round_digits(hex_real.y + border_end.y, 3),
+                            }
                         );
 
                         polygon.push(border);
@@ -595,4 +639,137 @@ pub fn get_polygons(areas: Areas, width: f32) -> Vec<Vec<(f32, f32)>> {
                 .collect()
         })
     .collect()
+}
+
+fn round_digits(value: f32, digits: u32) -> f32 {
+    let div = 10.0_f32.powi(digits as i32);
+
+    (value * div).round() / div
+}
+
+// Maximum inscribed circle
+
+
+fn inside_polygon(x: f32, y: f32, polygon: &Polygon) -> bool {
+    let mut c = false;
+	let mut start = &polygon[polygon.len() - 1];
+    for i in 0..polygon.len() {
+        let end = &polygon[i];
+        
+        if (end.y > y) != (start.y > y) &&
+			x < (start.x - end.x) * (y - end.y) / (start.y - end.y) + end.x
+		{
+            c = !c;
+		}
+
+        start = end;
+    }
+
+    c
+}
+
+fn distance_point_to_segment(point: &Point<f32>, start: &Point<f32>, end: &Point<f32>) -> f32 {
+    let px = end.x - start.x;
+    let py = end.y - start.y;
+
+    let norm = px * px + py * py;
+
+    let mut u = ((point.x - start.x) * px + (point.y - start.y) * py) / norm;
+
+    if u > 1.0 {
+        u = 1.0;
+	}
+    else if u < 0.0 {
+		u = 0.0;
+	}
+
+    let x = start.x + u * px;
+    let y = start.y + u * py;
+
+    let dx = x - point.x;
+    let dy = y - point.y;
+
+    let d = (dx * dx + dy * dy).sqrt();
+
+    d
+}
+
+
+pub fn max_inscribed_circle(
+	polygon: &Polygon,
+	accuracy: f32,
+	k: u32,
+) -> (Point<f32>, f32) {
+	let shrink = 2.0_f32.sqrt() * 2.0;
+
+	let mut max_x = f32::MIN;
+    let mut min_x = f32::MAX;
+    let mut max_y = f32::MIN;
+    let mut min_y = f32::MAX;
+
+    for p in polygon {
+        max_x = f32::max(p.x, max_x);
+        min_x = f32::min(p.x, min_x);
+        max_y = f32::max(p.y, max_y);
+        min_y = f32::min(p.y, min_y);
+	}
+
+    let mut cur_accuracy = f32::min(max_x - min_x, max_y - min_y);
+    let mut maximin_distance = 0.0;
+
+	// Point of inaccessability
+    let mut pia = Point {x: 0.0, y: 0.0};
+
+    let random = &mut thread_rng();
+
+    while cur_accuracy > accuracy {
+        let mut consequential_misses: u32 = 0;
+
+        while consequential_misses < k {
+            let node = loop {
+                let node_x = random.gen_range(min_x..max_x);
+                let node_y = random.gen_range(min_y..max_y);
+                if inside_polygon(node_x, node_y, polygon) {
+                    break Point {x: node_x, y: node_y};
+				}
+			};
+
+            let mut smallest_distance = f32::MAX;
+            let mut start = &polygon[polygon.len() - 1];
+            for i in 0..polygon.len() {
+                let end = &polygon[i];
+                
+                let d = distance_point_to_segment(&node, start, end);
+                if d < smallest_distance {
+                    smallest_distance = d;
+				}
+
+                start = end;
+			}
+
+            if maximin_distance < smallest_distance {
+                pia = node;
+                maximin_distance = smallest_distance;
+                consequential_misses = 0;
+			}
+			else {
+				consequential_misses += 1;
+			}
+		}
+
+        let mut region_w = max_x - min_x;
+        let mut region_h = max_y - min_y;
+
+        cur_accuracy = f32::min(region_w, region_h);
+
+        region_w /= shrink;
+        region_h /= shrink;
+
+        min_x = pia.x - region_w;
+        max_x = pia.x + region_w;
+        min_y = pia.y - region_h;
+        max_y = pia.y + region_h;
+	}
+
+    (pia, maximin_distance)
 }

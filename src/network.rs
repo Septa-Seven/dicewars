@@ -8,8 +8,7 @@ use websocket::server::NoTlsAcceptor;
 use websocket::{Message, OwnedMessage};
 use websocket::sync::{Client, Server, Writer};
 use serde_json::{Value, json};
-use crate::game::{Command, Game, GameConfig, get_polygons};
-
+use crate::game::{Command, Game, GameConfig, get_polygons, max_inscribed_circle};
 
 enum CommandError {
     ReadTimeoutError,
@@ -129,10 +128,23 @@ pub fn game_loop(
         let areas;
         (game, areas) = Game::from_config(game_config);
 
-        // TODO: Add command line flag "--polygons" that enables "areas" field in config 
-        //  There is no need to get this polygons if you don't visualize game.
+        // TODO: Add command line flag "--visuals" that enables "visuals" field in config 
+        //  There is no need to get this polygons and centers if you don't visualize game.
+        
+        let polygons = get_polygons(areas, 0.5);
+        let mut visuals = Vec::new();
+
+        for polygon in polygons {
+            let (center, radius) = max_inscribed_circle(&polygon, 0.01, 10);
+            visuals.push(json!({
+                "polygon": polygon,
+                "center": center,
+                "radius": radius,
+            }));
+        }
+
         let mut config = json!({
-            "areas": get_polygons(areas, 0.5),
+            "visuals": visuals,
             "graph": game.graph_ref(),
             "eliminate_every_n_round": game.get_eliminate_every_n_round(),
             "timeout": wait_timeout,
